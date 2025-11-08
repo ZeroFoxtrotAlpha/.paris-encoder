@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Morse ".paris" generator with a simple Tkinter GUI (minimal dependencies).
+- Enter text
+- Choose character WPM
+- Choose Farnsworth (effective) WPM
+- Export a .paris file (CSV renamed)
+
+Format:
+# Word: <your text>
+# Character speed: <char_wpm> WPM
+# Farnsworth spacing: <farns_wpm> WPM effective timing
+duration_ms,value
+<ms>,<1|0>
+
+Author: ChatGPT
+License: MIT
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import math
+import sys
+
+# Morse map (international)
+MORSE = {
+    "A": ".-",    "B": "-...",  "C": "-.-.",  "D": "-..",   "E": ".",
+    "F": "..-.",  "G": "--.",   "H": "....",  "I": "..",    "J": ".---",
+    "K": "-.-",   "L": ".-..",  "M": "--",    "N": "-.",    "O": "---",
+    "P": ".--.",  "Q": "--.-",  "R": ".-.",   "S": "...",   "T": "-",
+    "U": "..-",   "V": "...-",  "W": ".--",   "X": "-..-",  "Y": "-.--",
+    "Z": "--..",
+    "0": "-----", "1": ".----", "2": "..---", "3": "...--", "4": "....-",
+    "5": ".....", "6": "-....", "7": "--...", "8": "---..", "9": "----.",
+    ".": ".-.-.-", ",": "--..--", "?": "..--..", "'": ".----.", "!": "-.-.--",
+    "/": "-..-.",  "(": "-.--.",  ")": "-.--.-", "&": ".-...",  ":": "---...",
+    ";": "-.-.-.", "=": "-...-",  "+": ".-.-.",  "-": "-....-", "_": "..--.-",
+    '"': ".-..-.", "$": "...-..-", "@": ".--.-."
+}
+
+def dot_ms(wpm: float) -> float:
+    """Duration of a 'dot' in milliseconds for the given character WPM.
+    Standard formula: one PARIS word is 50 dot units; 60,000 ms / (wpm*50) = 1200/wpm.
+    """
+    return 1200.0 / max(wpm, 1e-9)
+
+def build_paris_rows(text: str, char_wpm: float, farns_wpm: float):
+    """
+    Build rows of (duration_ms, value) for the given text.
+    - Element (dot/dash) durations use char_wpm timing.
+    - Intra-element gaps (between dits/dahs) use 1 dot of char_wpm.
+    - Inter-character (3 dot) and inter-word (7 dot) gaps use Farnsworth timing (farns_wpm).
+    """
+    # Sanitize effective speed: if not slower than char_wpm, just use char_wpm for spacing
+    eff_wpm = min(farns_wpm, char_wpm) if farns_wpm > 0 else char_wpm
+    d_dot_char = dot_ms(char_wpm)
+    d_dot_eff  = dot_ms(eff_wpm)
+
+    d_dash = 3 * d_dot_char
+    d_intra = d_dot_char
+    d_inter_char = 3 * d_dot_eff
+    d_inter_word = 7 * d_dot_eff
+
+    rows = []  # list of (duration_ms:int, value:int)
+    words = text.strip().split()
+
+    for wi, w in enumerate(words):
+        # Build characters for this word
+        chars = list(w)
+        for ci, ch in enumerate(chars):
+            code = MORSE.get(ch.upper())
+            if not code:
+                # Unsupported character: skip it
+                continue
+            # For each element in the symbol
+            for ei, elem in enumerate(code):
+                # Key down
+                dur = d_dot_char if elem == "." else d_dash
+                rows.append( (int(round(dur)), 1) )
+                # Intra-element gap (not after the last element of the character)
+                if ei < len(code) - 1:
+                    rows.append( (int(round(d_intra)), 0) )
+            # After a character (not after the last character of the word)
+            if ci < len(chars) - 1:
+                rows.append( (int(round(d_inter_char)), 0) )
+        # After a word (not after the last word)
+        if wi < len(words) - 1:
+            rows.append( (int(round(d_inter_word)), 0) )
+
+    return rows
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Morse .paris Generator")
+        self.geometry("720x520")
+        self.minsize(680, 480)
+
+        # Input text
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Text to encode:").grid(row=0, column=0, sticky="w")
+        self.txt_input = tk.Text(frm, height=5, wrap="word")
+        self.txt_input.grid(row=1, column=0, columnspan=4, sticky="nsew", pady=(4,10))
+
+        # WPM controls
+        ttk.Label(frm, text="Character WPM:").grid(row=2, column=0, sticky="w")
+        self.var_char_wpm = tk.StringVar(value="15")
+        self.ent_char_wpm = ttk.Entry(frm, textvariable=self.var_char_wpm, width=10)
+        self.ent_char_wpm.grid(row=2, column=1, sticky="w", padx=(6,24))
+
+        ttk.Label(frm, text="Farnsworth (effective) WPM:").grid(row=2, column=2, sticky="w")
+        self.var_farns_wpm = tk.StringVar(value="5")
+        self.ent_farns_wpm = ttk.Entry(frm, textvariable=self.var_farns_wpm, width=10)
+        self.ent_farns_wpm.grid(row=2, column=3, sticky="w", padx=(6,0))
+
+        # Buttons
+        btns = ttk.Frame(frm)
+        btns.grid(row=3, column=0, columnspan=4, sticky="w", pady=(10,6))
+        ttk.Button(btns, text="Preview", command=self.on_preview).pack(side="left", padx=(0,8))
+        ttk.Button(btns, text="Export .paris", command=self.on_export).pack(side="left")
+
+        # Preview area
+        ttk.Label(frm, text="Preview:").grid(row=4, column=0, columnspan=4, sticky="w")
+        self.txt_preview = tk.Text(frm, height=12, wrap="none")
+        self.txt_preview.grid(row=5, column=0, columnspan=4, sticky="nsew", pady=(4,0))
+
+        # Layout weights
+        frm.rowconfigure(1, weight=1)
+        frm.rowconfigure(5, weight=2)
+        frm.columnconfigure(0, weight=1)
+        frm.columnconfigure(1, weight=0)
+        frm.columnconfigure(2, weight=0)
+        frm.columnconfigure(3, weight=0)
+
+        # Insert a friendly default
+        self.txt_input.insert("1.0", "PARIS")
+
+    def parse_wpm(self):
+        try:
+            c = float(self.var_char_wpm.get())
+            f = float(self.var_farns_wpm.get())
+            if c <= 0 or f <= 0:
+                raise ValueError
+            return c, f
+        except Exception:
+            messagebox.showerror("Invalid WPM", "Please enter positive numeric values for WPM.")
+            return None
+
+    def generate_text(self):
+        wpm_vals = self.parse_wpm()
+        if not wpm_vals:
+            return None
+        char_wpm, farns_wpm = wpm_vals
+        raw = self.txt_input.get("1.0", "end").strip()
+        if not raw:
+            messagebox.showwarning("No text", "Please enter some text to encode.")
+            return None
+
+        rows = build_paris_rows(raw, char_wpm, farns_wpm)
+
+        # Build header + CSV
+        header = [
+            f"# Word: {raw}",
+            f"# Character speed: {int(round(char_wpm))} WPM",
+            f"# Farnsworth spacing: {int(round(farns_wpm))} WPM effective timing",
+            "duration_ms,value"
+        ]
+        lines = header + [f"{d},{v}" for (d, v) in rows]
+        return "\n".join(lines)
+
+    def on_preview(self):
+        content = self.generate_text()
+        if content is None:
+            return
+        self.txt_preview.delete("1.0", "end")
+        # keep preview to reasonable size
+        preview_lines = content.splitlines()
+        # Show at most first 200 lines to avoid sluggish UI for long texts
+        max_lines = 200
+        if len(preview_lines) > max_lines:
+            shown = "\n".join(preview_lines[:max_lines]) + f"\n# ... ({len(preview_lines)-max_lines} more lines)"
+        else:
+            shown = content
+        self.txt_preview.insert("1.0", shown)
+
+    def on_export(self):
+        content = self.generate_text()
+        if content is None:
+            return
+        # Propose file name from first word
+        default_name = "output.paris"
+        raw = self.txt_input.get("1.0", "end").strip()
+        if raw:
+            base = "_".join(raw.split())
+            if base:
+                default_name = f"{base}.paris"
+        path = filedialog.asksaveasfilename(
+            title="Save .paris file",
+            defaultextension=".paris",
+            initialfile=default_name,
+            filetypes=[("PARIS files", "*.paris"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            messagebox.showinfo("Saved", f"File saved:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Save failed", f"Could not save file:\n{e}")
+
+def main():
+    app = App()
+    app.mainloop()
+
+if __name__ == "__main__":
+    main()
