@@ -8,9 +8,9 @@ This tool lets you:
 
 Input any text.
 
-Choose a Character WPM (actual symbol speed).
+Choose a Character speed (actual symbol speed).
 
-Choose a Farnsworth WPM (effective spacing speed).
+Choose a Farnsworth timing (effective spacing speed).
 
 Preview or export a .paris file suitable for Morse keyer testing, CW simulators, or signal-timing visualization.
 
