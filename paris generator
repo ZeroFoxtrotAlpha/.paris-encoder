@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Morse ".paris" generator with a simple Tkinter GUI (minimal dependencies).
+Morse ".paris" generator with extended parameters (tone, weight, jitter, etc.)
+and a simple Tkinter GUI (minimal dependencies).
+
 - Enter text
-- Choose character WPM
-- Choose Farnsworth (effective) WPM
+- Choose character & Farnsworth WPM
+- Configure timing/weight/tone/jitter
 - Export a .paris file (CSV renamed)
 
 Format:
 # Word: <your text>
 # Character speed: <char_wpm> WPM
 # Farnsworth spacing: <farns_wpm> WPM effective timing
+# Tone frequency: <freq> Hz
+# Weight ratio: <dot_to_dash_ratio>
+# Rise/Fall time: <ms>
+# Envelope: <shape>
+# Jitter: <±%>
+# Pre-key delay: <ms>
+# Post-key delay: <ms>
+# Encoding: International Morse
 duration_ms,value
 <ms>,<1|0>
 
@@ -20,152 +30,174 @@ License: MIT
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import math
-import sys
+import math, random
 
-# Morse map (international)
+# Morse map (International)
 MORSE = {
-    "A": ".-",    "B": "-...",  "C": "-.-.",  "D": "-..",   "E": ".",
-    "F": "..-.",  "G": "--.",   "H": "....",  "I": "..",    "J": ".---",
-    "K": "-.-",   "L": ".-..",  "M": "--",    "N": "-.",    "O": "---",
-    "P": ".--.",  "Q": "--.-",  "R": ".-.",   "S": "...",   "T": "-",
-    "U": "..-",   "V": "...-",  "W": ".--",   "X": "-..-",  "Y": "-.--",
+    "A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".",
+    "F": "..-.", "G": "--.", "H": "....", "I": "..", "J": ".---",
+    "K": "-.-", "L": ".-..", "M": "--", "N": "-.", "O": "---",
+    "P": ".--.", "Q": "--.-", "R": ".-.", "S": "...", "T": "-",
+    "U": "..-", "V": "...-", "W": ".--", "X": "-..-", "Y": "-.--",
     "Z": "--..",
     "0": "-----", "1": ".----", "2": "..---", "3": "...--", "4": "....-",
     "5": ".....", "6": "-....", "7": "--...", "8": "---..", "9": "----.",
     ".": ".-.-.-", ",": "--..--", "?": "..--..", "'": ".----.", "!": "-.-.--",
-    "/": "-..-.",  "(": "-.--.",  ")": "-.--.-", "&": ".-...",  ":": "---...",
-    ";": "-.-.-.", "=": "-...-",  "+": ".-.-.",  "-": "-....-", "_": "..--.-",
+    "/": "-..-.", "(": "-.--.", ")": "-.--.-", "&": ".-...", ":": "---...",
+    ";": "-.-.-.", "=": "-...-", "+": ".-.-.", "-": "-....-", "_": "..--.-",
     '"': ".-..-.", "$": "...-..-", "@": ".--.-."
 }
 
 def dot_ms(wpm: float) -> float:
-    """Duration of a 'dot' in milliseconds for the given character WPM.
-    Standard formula: one PARIS word is 50 dot units; 60,000 ms / (wpm*50) = 1200/wpm.
-    """
+    """Duration of a dot in milliseconds for given WPM."""
     return 1200.0 / max(wpm, 1e-9)
 
-def build_paris_rows(text: str, char_wpm: float, farns_wpm: float):
-    """
-    Build rows of (duration_ms, value) for the given text.
-    - Element (dot/dash) durations use char_wpm timing.
-    - Intra-element gaps (between dits/dahs) use 1 dot of char_wpm.
-    - Inter-character (3 dot) and inter-word (7 dot) gaps use Farnsworth timing (farns_wpm).
-    """
-    # Sanitize effective speed: if not slower than char_wpm, just use char_wpm for spacing
+def apply_jitter(duration, jitter_pct):
+    """Apply random ±% jitter to a duration."""
+    if jitter_pct <= 0:
+        return duration
+    factor = 1.0 + random.uniform(-jitter_pct/100.0, jitter_pct/100.0)
+    return duration * factor
+
+def build_paris_rows(text: str, char_wpm: float, farns_wpm: float,
+                     weight: float, jitter: float,
+                     pre_delay: int, post_delay: int):
+    """Build rows of (duration_ms, value) including jitter and weighting."""
     eff_wpm = min(farns_wpm, char_wpm) if farns_wpm > 0 else char_wpm
     d_dot_char = dot_ms(char_wpm)
-    d_dot_eff  = dot_ms(eff_wpm)
+    d_dot_eff = dot_ms(eff_wpm)
 
-    d_dash = 3 * d_dot_char
+    d_dash = weight * d_dot_char
     d_intra = d_dot_char
     d_inter_char = 3 * d_dot_eff
     d_inter_word = 7 * d_dot_eff
 
-    rows = []  # list of (duration_ms:int, value:int)
-    words = text.strip().split()
+    rows = []
+    if pre_delay > 0:
+        rows.append((int(pre_delay), 0))
 
+    words = text.strip().split()
     for wi, w in enumerate(words):
-        # Build characters for this word
-        chars = list(w)
-        for ci, ch in enumerate(chars):
+        for ci, ch in enumerate(w):
             code = MORSE.get(ch.upper())
             if not code:
-                # Unsupported character: skip it
                 continue
-            # For each element in the symbol
             for ei, elem in enumerate(code):
-                # Key down
                 dur = d_dot_char if elem == "." else d_dash
-                rows.append( (int(round(dur)), 1) )
-                # Intra-element gap (not after the last element of the character)
+                dur = apply_jitter(dur, jitter)
+                rows.append((int(round(dur)), 1))
                 if ei < len(code) - 1:
-                    rows.append( (int(round(d_intra)), 0) )
-            # After a character (not after the last character of the word)
-            if ci < len(chars) - 1:
-                rows.append( (int(round(d_inter_char)), 0) )
-        # After a word (not after the last word)
+                    rows.append((int(round(apply_jitter(d_intra, jitter))), 0))
+            if ci < len(w) - 1:
+                rows.append((int(round(apply_jitter(d_inter_char, jitter))), 0))
         if wi < len(words) - 1:
-            rows.append( (int(round(d_inter_word)), 0) )
+            rows.append((int(round(apply_jitter(d_inter_word, jitter))), 0))
 
+    if post_delay > 0:
+        rows.append((int(post_delay), 0))
     return rows
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Morse .paris Generator")
-        self.geometry("720x520")
-        self.minsize(680, 480)
+        self.title("Morse .paris Generator (Extended)")
+        self.geometry("780x640")
+        self.minsize(740, 560)
 
-        # Input text
         frm = ttk.Frame(self, padding=12)
         frm.pack(fill="both", expand=True)
 
         ttk.Label(frm, text="Text to encode:").grid(row=0, column=0, sticky="w")
         self.txt_input = tk.Text(frm, height=5, wrap="word")
-        self.txt_input.grid(row=1, column=0, columnspan=4, sticky="nsew", pady=(4,10))
+        self.txt_input.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=(4,10))
+        self.txt_input.insert("1.0", "PARIS")
 
-        # WPM controls
+        # Speed controls
         ttk.Label(frm, text="Character WPM:").grid(row=2, column=0, sticky="w")
         self.var_char_wpm = tk.StringVar(value="15")
-        self.ent_char_wpm = ttk.Entry(frm, textvariable=self.var_char_wpm, width=10)
-        self.ent_char_wpm.grid(row=2, column=1, sticky="w", padx=(6,24))
+        ttk.Entry(frm, textvariable=self.var_char_wpm, width=10).grid(row=2, column=1, sticky="w")
 
-        ttk.Label(frm, text="Farnsworth (effective) WPM:").grid(row=2, column=2, sticky="w")
+        ttk.Label(frm, text="Farnsworth WPM:").grid(row=2, column=2, sticky="w")
         self.var_farns_wpm = tk.StringVar(value="5")
-        self.ent_farns_wpm = ttk.Entry(frm, textvariable=self.var_farns_wpm, width=10)
-        self.ent_farns_wpm.grid(row=2, column=3, sticky="w", padx=(6,0))
+        ttk.Entry(frm, textvariable=self.var_farns_wpm, width=10).grid(row=2, column=3, sticky="w")
+
+        # Extended timing parameters
+        ttk.Label(frm, text="Weight (dot:dash ratio):").grid(row=3, column=0, sticky="w")
+        self.var_weight = tk.StringVar(value="3.0")
+        ttk.Entry(frm, textvariable=self.var_weight, width=10).grid(row=3, column=1, sticky="w")
+
+        ttk.Label(frm, text="Tone (Hz):").grid(row=3, column=2, sticky="w")
+        self.var_tone = tk.StringVar(value="600")
+        ttk.Entry(frm, textvariable=self.var_tone, width=10).grid(row=3, column=3, sticky="w")
+
+        ttk.Label(frm, text="Rise/Fall (ms):").grid(row=3, column=4, sticky="w")
+        self.var_risefall = tk.StringVar(value="8")
+        ttk.Entry(frm, textvariable=self.var_risefall, width=10).grid(row=3, column=5, sticky="w")
+
+        ttk.Label(frm, text="Jitter (±%):").grid(row=4, column=0, sticky="w")
+        self.var_jitter = tk.StringVar(value="0")
+        ttk.Entry(frm, textvariable=self.var_jitter, width=10).grid(row=4, column=1, sticky="w")
+
+        ttk.Label(frm, text="Pre-delay (ms):").grid(row=4, column=2, sticky="w")
+        self.var_pre = tk.StringVar(value="0")
+        ttk.Entry(frm, textvariable=self.var_pre, width=10).grid(row=4, column=3, sticky="w")
+
+        ttk.Label(frm, text="Post-delay (ms):").grid(row=4, column=4, sticky="w")
+        self.var_post = tk.StringVar(value="0")
+        ttk.Entry(frm, textvariable=self.var_post, width=10).grid(row=4, column=5, sticky="w")
 
         # Buttons
         btns = ttk.Frame(frm)
-        btns.grid(row=3, column=0, columnspan=4, sticky="w", pady=(10,6))
+        btns.grid(row=5, column=0, columnspan=6, sticky="w", pady=(10,6))
         ttk.Button(btns, text="Preview", command=self.on_preview).pack(side="left", padx=(0,8))
         ttk.Button(btns, text="Export .paris", command=self.on_export).pack(side="left")
 
         # Preview area
-        ttk.Label(frm, text="Preview:").grid(row=4, column=0, columnspan=4, sticky="w")
-        self.txt_preview = tk.Text(frm, height=12, wrap="none")
-        self.txt_preview.grid(row=5, column=0, columnspan=4, sticky="nsew", pady=(4,0))
+        ttk.Label(frm, text="Preview:").grid(row=6, column=0, columnspan=6, sticky="w")
+        self.txt_preview = tk.Text(frm, height=14, wrap="none")
+        self.txt_preview.grid(row=7, column=0, columnspan=6, sticky="nsew", pady=(4,0))
 
         # Layout weights
-        frm.rowconfigure(1, weight=1)
-        frm.rowconfigure(5, weight=2)
+        for i in (1,7):
+            frm.rowconfigure(i, weight=1)
         frm.columnconfigure(0, weight=1)
-        frm.columnconfigure(1, weight=0)
-        frm.columnconfigure(2, weight=0)
-        frm.columnconfigure(3, weight=0)
 
-        # Insert a friendly default
-        self.txt_input.insert("1.0", "PARIS")
-
-    def parse_wpm(self):
-        try:
-            c = float(self.var_char_wpm.get())
-            f = float(self.var_farns_wpm.get())
-            if c <= 0 or f <= 0:
-                raise ValueError
-            return c, f
-        except Exception:
-            messagebox.showerror("Invalid WPM", "Please enter positive numeric values for WPM.")
-            return None
+    def parse_floats(self, *vars_):
+        vals = []
+        for v in vars_:
+            try:
+                vals.append(float(v.get()))
+            except:
+                messagebox.showerror("Invalid input", "Please enter numeric values only.")
+                return None
+        return vals
 
     def generate_text(self):
-        wpm_vals = self.parse_wpm()
-        if not wpm_vals:
+        vals = self.parse_floats(self.var_char_wpm, self.var_farns_wpm,
+                                 self.var_weight, self.var_tone,
+                                 self.var_risefall, self.var_jitter,
+                                 self.var_pre, self.var_post)
+        if vals is None:
             return None
-        char_wpm, farns_wpm = wpm_vals
+        char_wpm, farns_wpm, weight, tone, risefall, jitter, pre, post = vals
         raw = self.txt_input.get("1.0", "end").strip()
         if not raw:
-            messagebox.showwarning("No text", "Please enter some text to encode.")
+            messagebox.showwarning("No text", "Enter text to encode.")
             return None
 
-        rows = build_paris_rows(raw, char_wpm, farns_wpm)
-
-        # Build header + CSV
+        rows = build_paris_rows(raw, char_wpm, farns_wpm, weight, jitter, pre, post)
         header = [
             f"# Word: {raw}",
-            f"# Character speed: {int(round(char_wpm))} WPM",
-            f"# Farnsworth spacing: {int(round(farns_wpm))} WPM effective timing",
+            f"# Character speed: {char_wpm:.2f} WPM",
+            f"# Farnsworth spacing: {farns_wpm:.2f} WPM effective timing",
+            f"# Tone frequency: {tone:.1f} Hz",
+            f"# Weight ratio: 1:{weight:.2f}",
+            f"# Rise/Fall time: {risefall:.1f} ms",
+            f"# Envelope: cosine",
+            f"# Jitter: ±{jitter:.1f}%",
+            f"# Pre-key delay: {pre:.1f} ms",
+            f"# Post-key delay: {post:.1f} ms",
+            f"# Encoding: International Morse",
             "duration_ms,value"
         ]
         lines = header + [f"{d},{v}" for (d, v) in rows]
@@ -176,21 +208,16 @@ class App(tk.Tk):
         if content is None:
             return
         self.txt_preview.delete("1.0", "end")
-        # keep preview to reasonable size
-        preview_lines = content.splitlines()
-        # Show at most first 200 lines to avoid sluggish UI for long texts
-        max_lines = 200
-        if len(preview_lines) > max_lines:
-            shown = "\n".join(preview_lines[:max_lines]) + f"\n# ... ({len(preview_lines)-max_lines} more lines)"
+        lines = content.splitlines()
+        if len(lines) > 200:
+            self.txt_preview.insert("1.0", "\n".join(lines[:200]) + f"\n# ... ({len(lines)-200} more lines)")
         else:
-            shown = content
-        self.txt_preview.insert("1.0", shown)
+            self.txt_preview.insert("1.0", content)
 
     def on_export(self):
         content = self.generate_text()
         if content is None:
             return
-        # Propose file name from first word
         default_name = "output.paris"
         raw = self.txt_input.get("1.0", "end").strip()
         if raw:
@@ -198,10 +225,8 @@ class App(tk.Tk):
             if base:
                 default_name = f"{base}.paris"
         path = filedialog.asksaveasfilename(
-            title="Save .paris file",
-            defaultextension=".paris",
-            initialfile=default_name,
-            filetypes=[("PARIS files", "*.paris"), ("All files", "*.*")]
+            title="Save .paris file", defaultextension=".paris",
+            initialfile=default_name, filetypes=[("PARIS files", "*.paris"), ("All files", "*.*")]
         )
         if not path:
             return
@@ -210,11 +235,10 @@ class App(tk.Tk):
                 f.write(content)
             messagebox.showinfo("Saved", f"File saved:\n{path}")
         except Exception as e:
-            messagebox.showerror("Save failed", f"Could not save file:\n{e}")
+            messagebox.showerror("Save failed", str(e))
 
 def main():
-    app = App()
-    app.mainloop()
+    App().mainloop()
 
 if __name__ == "__main__":
     main()
